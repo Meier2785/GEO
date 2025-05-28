@@ -1,2 +1,2 @@
 # GEO
-Scaffold
+Generative Engine Optimzation App
