@@ -1,0 +1,527 @@
+# GEO App Scaffold: Generative Engine Optimization (LLM-Focused)
+
+# Directory: geo_app/
+
+# 1. app.py
+# Main entry point for Streamlit interface
+
+import streamlit as st
+from project_manager import create_project, list_projects, get_project_state, update_project_state
+from company_analysis import analyze_company
+
+st.set_page_config(page_title="GEO App", layout="wide")
+st.title("🧠 Generative Engine Optimization (GEO) App")
+
+# --- Project Management UI ---
+st.sidebar.header("Manage Projects")
+projects = list_projects()
+selected_project = st.sidebar.selectbox("Select Project", ["New Project"] + projects)
+
+if selected_project == "New Project":
+    new_name = st.sidebar.text_input("Enter new project name")
+    if st.sidebar.button("Create Project") and new_name:
+        create_project(new_name)
+        st.experimental_rerun()
+else:
+    st.subheader(f"Project: {selected_project}")
+    state = get_project_state(selected_project)
+
+    # --- Step 1: Company Analysis ---
+    st.markdown("### Step 1: Company Analysis")
+    with st.form("company_input_form"):
+        company_website = st.text_input("Company Website")
+        company_description = st.text_area("Company Description")
+        submitted = st.form_submit_button("Analyze Company")
+
+    if submitted and company_website and company_description:
+        with st.spinner("Analyzing company profile with GPT-4..."):
+            analysis = analyze_company(company_description, company_website)
+        st.session_state["analysis"] = analysis
+        update_project_state(selected_project, {"analysis_complete": True})
+
+    if state["analysis_complete"] and "analysis" in st.session_state:
+        st.markdown("#### GPT-4 Generated Company Profile")
+        edited_analysis = st.text_area("Edit Analysis JSON as needed", st.session_state["analysis"], height=300)
+        if st.button("Approve Analysis"):
+            with open(f"projects/{selected_project}/analysis.json", "w") as f:
+                f.write(edited_analysis)
+            update_project_state(selected_project, {"analysis_complete": True})
+            st.success("Analysis saved and approved. Proceed to Step 2.")
+
+    # --- Step 2: Question Generation ---
+    if state["analysis_complete"]:
+        st.markdown("### Step 2: Question Generation")
+        if st.button("Generate Questions from Profile"):
+            with open(f"projects/{selected_project}/analysis.json") as f:
+                profile_text = f.read()
+            with st.spinner("Generating questions using GPT-4..."):
+                from question_selector import generate_questions_from_profile
+                questions_json = generate_questions_from_profile(profile_text)
+                st.session_state["questions"] = questions_json
+
+        if "questions" in st.session_state:
+            st.markdown("#### Generated Questions (editable)")
+            edited_questions = st.text_area("Review and edit the generated questions", st.session_state["questions"], height=400)
+            if st.button("Approve Questions"):
+                with open(f"projects/{selected_project}/questions.json", "w") as f:
+                    f.write(edited_questions)
+                update_project_state(selected_project, {"questions_approved": True})
+                st.success("Questions approved. Ready for LLM testing.")
+
+    # --- Step 3: Run Questions Against LLM ---
+    if state["questions_approved"]:
+        st.markdown("### Step 3: LLM Visibility Testing")
+        llm_options = ["GPT-4"]  # Extendable in future
+        selected_llms = st.multiselect("Select LLM(s) to test against", llm_options, default=["GPT-4"])
+
+        if st.button("Run LLM Analysis"):
+            import json
+            from llm_responder import get_llm_response
+            from result_comparator import score_company_mentions
+
+            with open(f"projects/{selected_project}/questions.json") as f:
+                questions = json.loads(f.read())
+
+            with open(f"projects/{selected_project}/analysis.json") as f:
+                analysis = json.loads(f.read())
+
+            company_name = analysis.get("name", "")
+            results = []
+            with st.spinner("Running questions against LLM(s)..."):
+                for question in questions:
+                    llm_outputs = {}
+                    for llm in selected_llms:
+                        response = get_llm_response(question)[llm]
+                        score = score_company_mentions(response, company_name)
+                        llm_outputs[llm] = {"response": response, "score": score}
+                    results.append({"question": question, "llm_outputs": llm_outputs})
+
+            with open(f"projects/{selected_project}/llm_results.json", "w") as f:
+                json.dump(results, f, indent=2)
+
+            update_project_state(selected_project, {"responses_collected": True})
+            st.success("LLM responses collected and analyzed.")
+
+    # --- Step 4: Generate Improvement Plan ---
+    if state["responses_collected"]:
+        st.markdown("### Step 4: GEO Improvement Plan")
+        if st.button("Generate Optimization Strategy"):
+            with open(f"projects/{selected_project}/llm_results.json") as f:
+                response_data = f.read()
+
+            with st.spinner("Analyzing responses and generating improvement plan..."):
+                import openai
+                prompt = f"""
+                Based on the following LLM response data and keyword analysis, provide a plan to improve this company's visibility in generative AI systems like ChatGPT. Include:
+                - Key weaknesses or gaps in discoverability
+                - Specific content, language, or positioning improvements
+                - Recommended actions (e.g. FAQ changes, use-case examples, keyword strategy)
+                - Top recommended keywords or phrases to include in online presence and LLM-facing content
+
+                Response data:
+                {response_data[:3500]}  # truncate to fit context window
+                """
+                plan_response = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a strategist for improving generative AI visibility."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1000
+                )
+                improvement_plan = plan_response.choices[0].message["content"].strip()
+
+            st.markdown("#### Suggested GEO Strategy")
+            st.text_area("Review and refine the improvement plan", improvement_plan, height=300)
+            with open(f"projects/{selected_project}/improvement_plan.txt", "w") as f:
+                f.write(improvement_plan)
+            update_project_state(selected_project, {"improvement_generated": True})
+            st.success("Improvement plan generated and saved.")
+
+    # --- Step 5: Summary Dashboard and Export ---
+import json
+with open(f"projects/{selected_project}/llm_results.json") as f:
+    llm_data = json.load(f)
+    if state["improvement_generated"]:
+        st.markdown("### Step 5: Project Summary and Export")
+
+        st.markdown("#### 📊 Visibility Scores by Question")
+        import json
+        with open(f"projects/{selected_project}/llm_results.json") as f:
+            results = json.load(f)
+
+        scores_data = []
+        for item in results:
+            q = item["question"]
+            for llm, output in item["llm_outputs"].items():
+                scores_data.append({"LLM": llm, "Question": q, "Score": output["score"]})
+
+        import pandas as pd
+        df_scores = pd.DataFrame(scores_data)
+        import matplotlib.pyplot as plt
+import seaborn as sns
+
+llm_filter = st.selectbox("Filter by LLM", options=["All"] + sorted(df_scores["LLM"].unique().tolist()))
+score_threshold = st.slider("Minimum Mention Score", min_value=0, max_value=1, value=0)
+sort_by = st.selectbox("Sort by", options=["Score", "Question"])
+
+filtered_df = df_scores[df_scores["Score"] >= score_threshold]
+if llm_filter != "All":
+    filtered_df = filtered_df[filtered_df["LLM"] == llm_filter]
+
+filtered_df = filtered_df.sort_values(by=sort_by, ascending=(sort_by == "Question"))
+
+st.dataframe(filtered_df.reset_index(drop=True))
+
+# --- Optional: Bar Chart of Scores ---
+st.markdown("#### 🧠 Keyword Frequency in LLM Responses")
+
+# Compare against previous keyword snapshot if available
+import os
+kw_path = f"projects/{selected_project}/keyword_history.json"
+previous_keywords = {}
+if os.path.exists(kw_path):
+    with open(kw_path) as f:
+        previous_keywords = json.load(f)
+
+# Save current keywords for future comparison
+with open(kw_path, "w") as f:
+    json.dump(dict(common_words), f, indent=2)
+
+# Save timestamped snapshot for history
+from datetime import datetime
+history_dir = f"projects/{selected_project}/keyword_snapshots"
+os.makedirs(history_dir, exist_ok=True)
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+with open(f"{history_dir}/kw_{timestamp}.json", "w") as snap:
+    json.dump(dict(common_words), snap, indent=2)
+
+# Compute gains
+if previous_keywords:
+    gain_data = []
+    for kw, freq in common_words:
+        old_freq = previous_keywords.get(kw, 0)
+        delta = freq - old_freq
+        gain_data.append({"Keyword": kw, "Now": freq, "Before": old_freq, "Change": delta})
+    gain_df = pd.DataFrame(gain_data).sort_values(by="Change", ascending=False)
+    st.markdown("#### 🔍 Keyword Gains Since Last Run")
+    st.dataframe(gain_df)
+import re
+from collections import Counter
+
+all_text = " ".join([output["response"] for item in llm_data for output in item["llm_outputs"].values()])
+keywords = re.findall(r"\b\w{5,}\b", all_text.lower())
+common_words = Counter(keywords).most_common(20)
+
+kw_df = pd.DataFrame(common_words, columns=["Keyword", "Frequency"])
+st.dataframe(kw_df)
+
+st.markdown("#### 📉 Keyword Trend History")
+
+import glob
+snapshots = sorted(glob.glob(f"{history_dir}/kw_*.json"))
+trend_data = {}
+for snap_file in snapshots:
+    snap_time = os.path.basename(snap_file).replace("kw_", "").replace(".json", "")
+    with open(snap_file) as f:
+        snap_keywords = json.load(f)
+    for k, v in snap_keywords.items():
+        trend_data.setdefault(k, []).append((snap_time, v))
+
+df_trends["Date"] = pd.to_datetime(df_trends["Date"], format="%Y%m%d_%H%M%S", errors='coerce')
+trend_rows = []
+for k, entries in trend_data.items():
+    for snap_time, val in entries:
+        trend_rows.append({"Keyword": k, "Date": snap_time, "Frequency": val})
+df_trends = pd.DataFrame(trend_rows)
+
+# Plot trends for top keywords
+if not kw_df.empty:
+    top_keywords = kw_df["Keyword"].head(5).tolist()
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for kw in top_keywords:
+        subset = df_trends[df_trends["Keyword"] == kw]
+        ax.plot(subset["Date"], subset["Frequency"], marker="o", label=kw)
+    ax.set_title("Keyword Frequency Over Time")
+    ax.set_xlabel("Snapshot Date")
+    ax.set_ylabel("Frequency")
+    ax.legend()
+    st.pyplot(fig)
+
+st.markdown("#### 📈 Visibility Score Chart")
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.barplot(data=df_scores, x="Score", y="Question", hue="LLM", dodge=True, ax=ax)
+ax.set_title("Company Mention Score by Question")
+ax.set_xlabel("Mention Score")
+ax.set_ylabel("Question")
+st.pyplot(fig)
+
+# --- Optional: Export as PDF ---
+st.markdown("#### 🖨️ Export Full Report")
+import io
+from fpdf import FPDF
+import re
+from collections import Counter
+
+class PDF(FPDF):
+    def header(self):
+        self.set_font("Arial", "B", 14)
+        self.cell(0, 10, f"GEO Visibility Report - {selected_project}", 0, 1, "C")
+    def chapter_title(self, title):
+        self.set_font("Arial", "B", 12)
+        self.cell(0, 10, title, 0, 1)
+    def chapter_body(self, body):
+        self.set_font("Arial", "", 11)
+        self.multi_cell(0, 10, body)
+        self.ln()
+
+doc = PDF()
+doc.add_page()
+
+doc.chapter_title("Company Profile")
+doc.chapter_body(open(f"projects/{selected_project}/analysis.json").read())
+
+doc.chapter_title("Key Questions")
+doc.chapter_body(open(f"projects/{selected_project}/questions.json").read())
+
+doc.chapter_title("Improvement Plan")
+doc.chapter_body(open(f"projects/{selected_project}/improvement_plan.txt").read())
+
+# Include excerpts from LLM responses
+with open(f"projects/{selected_project}/llm_results.json") as f:
+    llm_data = json.load(f)
+
+st.markdown("#### 📌 Select Questions to Include in Report")
+question_options = [f"{i+1}. {d['question'][:100]}..." if i < len(llm_data) else f"Question {i}" for i, d in enumerate(llm_data)]
+selected_indices = st.multiselect("Choose questions to include in PDF", list(range(len(question_options))), format_func=lambda x: question_options[x])
+
+if not selected_indices:
+    selected_indices = list(range(5))  # Default to first 5 if none selected
+
+st.session_state["selected_questions"] = selected_indices or list(range(5))
+
+for i in st.session_state["selected_questions"]:
+    item = llm_data[i]
+    doc.chapter_title(f"LLM Response: {item['question'][:80]}...")
+    for llm_name, data in item["llm_outputs"].items():
+        doc.chapter_body(f"{llm_name} Score: {data['score']}
+Response: {data['response'][:800]}
+...")
+
+pdf_buffer = io.BytesIO()
+doc.output(pdf_buffer)
+pdf_buffer.seek(0)
+st.download_button("📄 Download Full Report as PDF", data=pdf_buffer, file_name="geo_report.pdf")
+
+        st.markdown("#### 📥 Downloadable Artifacts")
+        st.download_button("📁 Download Company Profile", data=open(f"projects/{selected_project}/analysis.json").read(), file_name="analysis.json")
+        st.download_button("📁 Download Questions", data=open(f"projects/{selected_project}/questions.json").read(), file_name="questions.json")
+        st.download_button("📁 Download LLM Results", data=open(f"projects/{selected_project}/llm_results.json").read(), file_name="llm_results.json")
+        st.download_button("📁 Download Improvement Plan", data=open(f"projects/{selected_project}/improvement_plan.txt").read(), file_name="improvement_plan.txt")
+# Supports multi-project workflows
+# - Project-level data management for one or more companies
+# - Track progress and state for each project
+# - Step 1 Workflow: Analyze company using ChatGPT
+#   - Input: Company name, website, description
+#   - Output: Structured company profile (editable by user)
+# - Step 2 Workflow: Generate 25 natural language questions across categories
+#   - Input: Approved company profile
+#   - Output: Editable question list
+# - Step 3 Workflow: Run selected questions against LLM(s)
+#   - Input: Final question list, LLM(s) selected
+#   - Output: LLM responses + company visibility analysis
+# - Step 4 Workflow: Generate improvement plan from LLM(s)
+#   - Input: Response data + user approval
+#   - Output: LLM-generated GEO improvement strategies
+
+# 2. company_analysis.py
+# Extracts structured insights from any company using GPT-4
+
+import openai
+import os
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+def analyze_company(text, website):
+    prompt = f"""
+    Analyze the following company using this website as context:
+
+    Website: {website}
+    Description:
+    {text}
+
+    Return a structured JSON object with the following fields:
+    - name: Name of the company
+    - website: Website (must match input URL)
+    - industry: Primary industry sector
+    - sub_industry: More specific categorization
+    - headquarters: City, state, or country
+    - locations: List of cities or countries where they operate
+    - employee_count: Estimate of employee size range
+    - founded_year: Year the company was founded (if available)
+    - claimed_problem: What the company claims to solve
+    - inferred_problem: What the company actually solves based on the text
+    - products_services: List of offerings or core capabilities
+    - target_customer: Who their ideal customers are (industries, roles, company size)
+    - go_to_market: Sales or distribution strategy (direct, partner, online)
+    - ai_usage: Whether they use AI and how (LLMs, ML, heuristics, etc)
+    - ai_use_cases: Key functions or workflows where AI is applied
+    - ai_maturity_level: (None, Experimental, Operational, Scaled)
+    - tech_stack_indicators: Tools, APIs, platforms mentioned or implied
+    - governance_risk_level: Estimate of AI risk level (low, medium, high)
+    - governance_opportunities: Recommendations for AI governance improvements
+    """
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are an expert AI and business analyst."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=1000
+        )
+        return response.choices[0].message["content"].strip()
+    except Exception as e:
+        return f"Error querying OpenAI: {e}"
+
+# 3. question_selector.py
+# Generates and filters a list of natural user questions based on company profile
+
+import json
+
+def load_questions():
+    with open("templates/questions.json") as f:
+        return json.load(f)
+
+def generate_questions_from_profile(profile_text):
+    prompt = f"""
+    Based on this company profile:
+
+    {profile_text}
+
+    Suggest 25 natural language questions someone might ask ChatGPT
+    - Spread across categories like use case, regulation, risk, compliance, ROI, setup
+    - Varying in complexity (basic to advanced)
+    - Do not include the company name
+    - Make questions realistic to how a user would phrase them
+    - Output as a JSON list
+    """
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message["content"].strip()
+    except Exception as e:
+        return f"Error generating questions: {e}"
+
+# 4. llm_responder.py
+# Uses OpenAI's GPT-4 to run each question
+
+import os
+import openai
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+def query_openai(question):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": question}
+            ]
+        )
+        return response.choices[0].message["content"].strip()
+    except Exception as e:
+        return f"Error: {e}"
+
+def get_llm_response(question):
+    return {"GPT-4": query_openai(question)}
+
+# 5. result_comparator.py
+# Compares whether the company is mentioned in the response
+
+def score_company_mentions(response_text, company_name):
+    score = 1 if company_name.lower() in response_text.lower() else 0
+    return score
+
+# 6. templates/questions.json
+# This file should start empty and be populated dynamically after each question generation workflow.
+# No pre-templated or static questions should be included.
+# Example after generation:
+# [
+#   "How can companies measure the ROI of their AI tools?",
+#   "What are typical AI compliance risks in the healthcare sector?",
+#   ...
+# ]
+
+# 7. utils/logger.py
+# Helper for saving LLM outputs and scores
+
+def log_results(company_name, results):
+    with open(f"logs/{company_name}.json", "w") as f:
+        json.dump(results, f, indent=2)
+
+# 8. project_manager.py
+# Manages multiple company analysis projects
+# - Create, list, update, delete project directories
+# - Track state of each workflow (analysis, questions, responses, plan)
+
+import os
+import json
+
+BASE_DIR = "projects"
+
+# Create a new project directory with initial metadata
+def create_project(project_name):
+    path = os.path.join(BASE_DIR, project_name)
+    os.makedirs(path, exist_ok=True)
+    state_path = os.path.join(path, "state.json")
+    if not os.path.exists(state_path):
+        with open(state_path, "w") as f:
+            json.dump({
+                "status": "created",
+                "analysis_complete": False,
+                "questions_approved": False,
+                "responses_collected": False,
+                "improvement_generated": False
+            }, f)
+    return path
+
+# Get list of all existing projects
+def list_projects():
+    return [d for d in os.listdir(BASE_DIR) if os.path.isdir(os.path.join(BASE_DIR, d))]
+
+# Load project state
+def get_project_state(project_name):
+    path = os.path.join(BASE_DIR, project_name, "state.json")
+    with open(path) as f:
+        return json.load(f)
+
+# Update a project state
+def update_project_state(project_name, updates):
+    path = os.path.join(BASE_DIR, project_name, "state.json")
+    with open(path) as f:
+        state = json.load(f)
+    state.update(updates)
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+
+# Delete a project
+def delete_project(project_name):
+    import shutil
+    shutil.rmtree(os.path.join(BASE_DIR, project_name))
+
+# 9. requirements.txt
+openai
+streamlit
+pandas
+matplotlib
+seaborn
+fpdf
